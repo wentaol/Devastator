@@ -3,3 +3,5 @@ Dependencies:
 picameria
 visdom
 VL53L1X
+RPi.GPIO
+pygame (for joystick control)
