@@ -1,0 +1,7 @@
+power on
+agent on
+default-agent
+scan on
+remove A4:53:85:3D:B8:ED
+pair A4:53:85:3D:B8:ED
+exit
