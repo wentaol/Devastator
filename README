@@ -4,4 +4,5 @@ picameria
 visdom
 VL53L1X
 RPi.GPIO
-pygame (for joystick control)
+ipygame (for joystick control)
+pytables
