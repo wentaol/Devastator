@@ -100,34 +100,36 @@ def fileWorker(q, running):
     print("File thread terminated.")
 
 ## Gets input from joystick and writes motion commands to tcQueue
-#import pygame as pg
-#import os
-#def joystickWorker(tmq, tcq, running):
-#    # pygame setup
-#    os.environ["SDL_VIDEODRIVER"] = "dummy"
-#    pg.init()
-#    pg.joystick.init()
-#    joystick = pg.joystick.Joystick(0)
-#    joystick.init()
-#    print("Joystick online:", joystick.get_name())
-#    while bool(running.value):
-#        pg.event.pump()
-#        if joystick.get_button(8):
-#            running.value = 0
-#            break
-#        fw_ax = -joystick.get_axis(1)
-#        lr_ax = joystick.get_axis(3)
-#        # Convert forward and left right to motor values
-#        is_forward = 1 if fw_ax >= 0 else -1
-#        lax = max(-1.0, min(1.0, fw_ax + is_forward * lr_ax))
-#        rax = max(-1.0, min(1.0, fw_ax - is_forward * lr_ax))
-#        tcq.put((lax, rax))
-#        t = time.time() - start
-#        tmq.put(('motor', t, [lax, rax]))
-#        time.sleep(0.1)
-#    print("Joystick thread terminated.")
-#
-## Reads from tc queue and sends output to motors
+import pygame as pg
+
+def joystickWorker(tmq, tcq, running):
+    # pygame setup
+    os.environ["SDL_VIDEODRIVER"] = "dummy"
+    pg.init()
+    pg.joystick.init()
+    joystick = pg.joystick.Joystick(0)
+    joystick.init()
+    print("Joystick online:", joystick.get_name())
+    while bool(running.value):
+        pg.event.pump()
+        if joystick.get_button(8):
+            running.value = 0
+            break
+        fw_ax = -joystick.get_axis(1)
+        lr_ax = joystick.get_axis(2)
+        # Convert forward and left right to motor values
+        is_forward = 1 if fw_ax >= 0 else -1
+        lax = max(-1.0, min(1.0, fw_ax + is_forward * lr_ax))
+        rax = max(-1.0, min(1.0, fw_ax - is_forward * lr_ax))
+        print("L: %.3f, R:%.3f" % (lax, rax),
+              end="\r", flush=True)
+        #tcq.put((lax, rax))
+        t = time.time() - start
+        tmq.put(('motor', t, [lax, rax]))
+        time.sleep(0.1)
+    print("Joystick thread terminated.")
+
+# Reads from tc queue and sends output to motors
 #import RPi.GPIO as GPIO
 #def motorWorker(q, running):
 #    #set GPIO numbering mode and define output pins
@@ -186,8 +188,8 @@ if __name__ == "__main__":
     tcQueue = multiprocessing.Queue()
     #pmotor = multiprocessing.Process(target = motorWorker, args=(tcQueue, running,))
     #pmotor.start()
-    #pjoy = multiprocessing.Process(target = joystickWorker, args=(tmQueue, tcQueue, running,))
-    #pjoy.start()
+    pjoy = multiprocessing.Process(target = joystickWorker, args=(tmQueue, tcQueue, running,))
+    pjoy.start()
 
     try:
         while bool(running.value):
@@ -202,4 +204,4 @@ if __name__ == "__main__":
         #pdepth.join()
         pfile.join()
         #pmotor.join()
-        #pjoy.join()
+        pjoy.join()
