@@ -46,25 +46,25 @@ def camWorker(q, running):
         print("Unable to open camera")
 
 ## Writes depth sensor readings to tmqueue
-#def depthWorker(q, running):
-#    tof = VL53L1X.VL53L1X(i2c_bus=1, i2c_address=0x29)
-#    tof.open()
-#    tof.start_ranging(3)
-#    ts = deque(maxlen=30)
-#    ds = deque(maxlen=30)
-#    print("Depth sensor online!")
-#    while bool(running.value):
-#        depth = tof.get_distance() / 10.0
-#        t = time.time() - start
-#        q.put(('depth', t, depth))
-#        ds.append(depth)
-#        ts.append(t)
-#        vis.text(str(depth), win=1)
-#        vis.line(X=np.array(ts), 
-#                 Y=np.array(ds), 
-#                 update='append', win=2)
-#    tof.stop_ranging()
-#    print("Depth sensor thread terminated.")
+def depthWorker(q, running):
+    tof = VL53L1X.VL53L1X(i2c_bus=1, i2c_address=0x29)
+    tof.open()
+    tof.start_ranging(3)
+    ts = deque(maxlen=30)
+    ds = deque(maxlen=30)
+    print("Depth sensor online!")
+    while bool(running.value):
+        depth = tof.get_distance() / 10.0
+        t = time.time() - start
+        q.put(('depth', t, depth))
+        ds.append(depth)
+        ts.append(t)
+        #vis.text(str(depth), win=1)
+        vis.line(X=np.array(ts), 
+                 Y=np.array(ds), 
+                 update='append', win=2)
+    tof.stop_ranging()
+    print("Depth sensor thread terminated.")
 
 # Consumes from tmqueue and writes output to file
 def fileWorker(q, running):
@@ -121,54 +121,54 @@ def joystickWorker(tmq, tcq, running):
         is_forward = 1 if fw_ax >= 0 else -1
         lax = max(-1.0, min(1.0, fw_ax + is_forward * lr_ax))
         rax = max(-1.0, min(1.0, fw_ax - is_forward * lr_ax))
-        print("L: %.3f, R:%.3f" % (lax, rax),
-              end="\r", flush=True)
-        #tcq.put((lax, rax))
+        tcq.put((lax, rax))
         t = time.time() - start
         tmq.put(('motor', t, [lax, rax]))
         time.sleep(0.1)
     print("Joystick thread terminated.")
 
 # Reads from tc queue and sends output to motors
-#import RPi.GPIO as GPIO
-#def motorWorker(q, running):
-#    #set GPIO numbering mode and define output pins
-#    LE = 18 # Brown
-#    RE = 22 # Violet
-#    LP = 11 # Yellow
-#    RP = 13 # Green
-#    LN = 16 # Orange
-#    RN = 15 # Blue
-#    GPIO.setmode(GPIO.BOARD)
-#    GPIO.setup(LP,GPIO.OUT)
-#    GPIO.setup(RP,GPIO.OUT)
-#    GPIO.setup(LN,GPIO.OUT)
-#    GPIO.setup(RN,GPIO.OUT)
-#    GPIO.setup(LE,GPIO.OUT)
-#    GPIO.setup(RE,GPIO.OUT)
-#    pwm_l = GPIO.PWM(LE, 100)
-#    pwm_r = GPIO.PWM(RE, 100)
-#    pwm_l.start(0)
-#    pwm_r.start(0)
-#    print("Motor online!")
-#    while bool(running.value):
-#        try:
-#            lax, rax = q.get(timeout=1.0)
-#        except Empty:
-#            # Safety stop if joystick thread isn't working
-#            print("No input from joystick thread!")
-#            lax = 0.0
-#            rax = 0.0
-#        print("L: %.3f, R:%.3f" % (lax, rax),
-#              end="\r", flush=True)
-#        # Set motor outputs
-#        GPIO.output(LP, lax > 0)
-#        GPIO.output(LN, lax < 0)
-#        GPIO.output(RP, rax > 0)
-#        GPIO.output(RN, rax < 0)
-#        pwm_l.ChangeDutyCycle(int(100 * abs(lax)))
-#        pwm_r.ChangeDutyCycle(int(100 * abs(rax)))
-#    print("Motor control thread terminated.")
+import Jetson.GPIO as GPIO
+def motorWorker(q, running):
+    #set GPIO numbering mode and define output pins
+    LE = 18 # Brown
+    RE = 22 # Violet
+    LP = 11 # Yellow
+    RP = 13 # Green
+    LN = 16 # Orange
+    RN = 15 # Blue
+    GPIO.setmode(GPIO.BOARD)
+    GPIO.setup(LP,GPIO.OUT)
+    GPIO.setup(RP,GPIO.OUT)
+    GPIO.setup(LN,GPIO.OUT)
+    GPIO.setup(RN,GPIO.OUT)
+    GPIO.setup(LE,GPIO.OUT)
+    GPIO.setup(RE,GPIO.OUT)
+    #pwm_l = GPIO.PWM(LE, 100)
+    #pwm_r = GPIO.PWM(RE, 100)
+    #pwm_l.start(0)
+    #pwm_r.start(0)
+    print("Motor online!")
+    while bool(running.value):
+        try:
+            lax, rax = q.get(timeout=1.0)
+        except Empty:
+            # Safety stop if joystick thread isn't working
+            print("No input from joystick thread!")
+            lax = 0.0
+            rax = 0.0
+        print("L: %.3f, R:%.3f" % (lax, rax),
+              end="\r", flush=True)
+        # Set motor outputs
+        GPIO.output(LP, lax > 0)
+        GPIO.output(LN, lax < 0)
+        GPIO.output(RP, rax > 0)
+        GPIO.output(RN, rax < 0)
+        #pwm_l.ChangeDutyCycle(int(100 * abs(lax)))
+        #pwm_r.ChangeDutyCycle(int(100 * abs(rax)))
+        GPIO.output(LE, abs(lax) > 0.1)
+        GPIO.output(RE, abs(rax) > 0.1)
+    print("Motor control thread terminated.")
 
 
 #
@@ -179,15 +179,15 @@ if __name__ == "__main__":
     tmQueue = multiprocessing.Queue()
     pcam = multiprocessing.Process(target = camWorker, args=(tmQueue, running,))
     pcam.start()
-    #pdepth = multiprocessing.Process(target = depthWorker, args=(tmQueue, running,))
-    #pdepth.start()
+    pdepth = multiprocessing.Process(target = depthWorker, args=(tmQueue, running,))
+    pdepth.start()
     pfile = multiprocessing.Process(target = fileWorker, args=(tmQueue, running,))
     pfile.start()
 
     # Telecommands
     tcQueue = multiprocessing.Queue()
-    #pmotor = multiprocessing.Process(target = motorWorker, args=(tcQueue, running,))
-    #pmotor.start()
+    pmotor = multiprocessing.Process(target = motorWorker, args=(tcQueue, running,))
+    pmotor.start()
     pjoy = multiprocessing.Process(target = joystickWorker, args=(tmQueue, tcQueue, running,))
     pjoy.start()
 
@@ -201,7 +201,7 @@ if __name__ == "__main__":
         print("Shutting down processes...")
         running.value = 0
         pcam.join()
-        #pdepth.join()
+        pdepth.join()
         pfile.join()
-        #pmotor.join()
+        pmotor.join()
         pjoy.join()

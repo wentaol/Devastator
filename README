@@ -6,3 +6,8 @@ VL53L1X
 RPi.GPIO
 ipygame (for joystick control)
 pytables
+
+
+Other Setup:
+Set user group for permission to use i2c
+Setup for controller via bluetooth
