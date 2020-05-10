@@ -3,6 +3,7 @@ from queue import Empty
 import visdom
 import numpy as np
 import time
+from datetime import timedelta
 import sys
 import os
 import tables
@@ -15,10 +16,6 @@ from jetson_camera import gstreamer_pipeline
 import VL53L1X
 from collections import deque
 
-# Connect to visdom server
-vis = visdom.Visdom()
-start = time.time()
-running = multiprocessing.Value('i', 1)
 
 IM_W = 320
 IM_H = 240
@@ -67,7 +64,7 @@ def depthWorker(q, running):
     print("Depth sensor thread terminated.")
 
 # Consumes from tmqueue and writes output to file
-def fileWorker(q, running):
+def fileWorker(q, outq, running):
     # Create output files
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     if not os.path.isdir('data'):
@@ -79,11 +76,12 @@ def fileWorker(q, running):
     array_depthtime = f.create_earray(f.root, 'depthtime', tables.Float32Atom(), (0, 1))
     array_motordata = f.create_earray(f.root, 'motordata', tables.Float32Atom(), (0, 2))
     array_motortime = f.create_earray(f.root, 'motortime', tables.Float32Atom(), (0, 1))
+    livetms = {}
     print("File thread online!")
     while bool(running.value):
         try:
             (key, t, value) = q.get(timeout=1)
-            t_arr = np.array([[t]]) 
+            t_arr = np.array([[t]])
             if (key == 'cam'):
                 array_camtime.append(t_arr)
                 array_camdata.append(np.expand_dims(value, 0))
@@ -93,6 +91,15 @@ def fileWorker(q, running):
             elif (key == 'motor'):
                 array_motortime.append(t_arr)
                 array_motordata.append(np.array(value).reshape(1,2))
+            elif (key == 'startcollection'):
+                print('Start collection', value)
+                livetms[value] = []
+            elif (key == 'stopcollection'):
+                print('Stop collection', value)
+                outq.put(livetms[value])
+                livetms.pop(value, None) 
+            if key in livetms.keys():
+                livetms[key].append((t, value))
         except:
             pass
     print("Closing file...")
@@ -111,19 +118,19 @@ def joystickWorker(tmq, tcq, running):
     joystick.init()
     print("Joystick online:", joystick.get_name())
     while bool(running.value):
-        pg.event.pump()
-        if joystick.get_button(8):
-            running.value = 0
-            break
-        fw_ax = -joystick.get_axis(1)
-        lr_ax = joystick.get_axis(2)
-        # Convert forward and left right to motor values
-        is_forward = 1 if fw_ax >= 0 else -1
-        lax = max(-1.0, min(1.0, fw_ax + is_forward * lr_ax))
-        rax = max(-1.0, min(1.0, fw_ax - is_forward * lr_ax))
-        tcq.put((lax, rax))
-        t = time.time() - start
-        tmq.put(('motor', t, [lax, rax]))
+        if bool(ismanual.value):
+            pg.event.pump()
+            if joystick.get_button(8):
+                ismanual.value = 0
+            fw_ax = -joystick.get_axis(1)
+            lr_ax = joystick.get_axis(2)
+            # Convert forward and left right to motor values
+            is_forward = 1 if fw_ax >= 0 else -1
+            lax = max(-1.0, min(1.0, fw_ax + is_forward * lr_ax))
+            rax = max(-1.0, min(1.0, fw_ax - is_forward * lr_ax))
+            tcq.put((lax, rax))
+            t = time.time() - start
+            tmq.put(('motor', t, [lax, rax]))
         time.sleep(0.1)
     print("Joystick thread terminated.")
 
@@ -154,7 +161,7 @@ def motorWorker(q, running):
             lax, rax = q.get(timeout=1.0)
         except Empty:
             # Safety stop if joystick thread isn't working
-            print("No input from joystick thread!")
+            # print("No input from joystick thread!")
             lax = 0.0
             rax = 0.0
         print("L: %.3f, R:%.3f" % (lax, rax),
@@ -175,13 +182,19 @@ def motorWorker(q, running):
 # Main Loop
 #
 if __name__ == "__main__":
+    # Connect to visdom server
+    vis = visdom.Visdom()
+    start = time.time()
+    running = multiprocessing.Value('i', 1)
+    ismanual = multiprocessing.Value('i', 0)
     # Telemetry
     tmQueue = multiprocessing.Queue()
+    livetmQueue = multiprocessing.Queue() # only activated for live collection
     pcam = multiprocessing.Process(target = camWorker, args=(tmQueue, running,))
     pcam.start()
     pdepth = multiprocessing.Process(target = depthWorker, args=(tmQueue, running,))
     pdepth.start()
-    pfile = multiprocessing.Process(target = fileWorker, args=(tmQueue, running,))
+    pfile = multiprocessing.Process(target = fileWorker, args=(tmQueue, livetmQueue, running,))
     pfile.start()
 
     # Telecommands
@@ -193,8 +206,45 @@ if __name__ == "__main__":
 
     try:
         while bool(running.value):
-            if input("Input 'q' to quit:") == 'q':
-                running.value = 0            
+            kbinput = input("Input 'q' to quit:")
+            if kbinput  == 'q' or kbinput =='quit':
+                running.value = 0
+            elif kbinput == 'calibrate':
+                print('Begin calibration...')
+                ismanual.value = 0
+                time.sleep(1.0)
+                # Clear telemetry buffer and start collection
+                tmQueue.put(("startcollection", None, "depth"))
+                # Execute movement routine
+                tmpend = time.time() + 5.0 
+                while time.time() < tmpend:
+                    t = time.time() - start
+                    tcQueue.put((1.0, 1.0))
+                    tmQueue.put(('motor', t, [1.0, 1.0]))
+                    time.sleep(0.1) 
+                # Stop collecting telemetry to buffer
+                tmQueue.put(("stopcollection", None, "depth"))
+                time.sleep(1.0)
+                # Perform analysis and output results
+                try:
+                    outdata = livetmQueue.get()
+                    velocities = []
+                    for i in range(len(outdata)-1):
+                        dt = outdata[i+1][0] - outdata[i][0]
+                        dz = outdata[i][1] - outdata[i+1][1]
+                        velocities.append(dz / dt)
+                    print("Max v:", np.max(velocities))
+                    print("Median v:", np.median(velocities))
+                except:
+                    print("Failed to get data from queue!")
+            elif kbinput == 'manual start':
+                print('Enabling manual joystick control...')
+                ismanual.value = 1
+                time.sleep(1.0)
+            elif kbinput == 'manual stop':
+                print('Disabling manual joystick control...')
+                ismanual.value = 0
+                time.sleep(1.0)                
     except Exception as e:
         print(e)
     finally:
