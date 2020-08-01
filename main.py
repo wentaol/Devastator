@@ -22,7 +22,7 @@ IM_H = 240
 
 # Writes camera data to tmqueue
 def camWorker(q, running):
-    stream = gstreamer_pipeline(flip_method=0, 
+    stream = gstreamer_pipeline(flip_method=2, 
                                 capture_width=IM_W, 
                                 capture_height=IM_H,
                                 display_width=IM_W, 
@@ -106,9 +106,19 @@ def fileWorker(q, outq, running):
     f.close()
     print("File thread terminated.")
 
+# Motor commanding and telemetry recording helper function
+def motor(l, r, dt, tcq, tmq, stop=True):
+    t = time.time() - start
+    tcq.put((l,r))
+    tmq.put(('motor', t, [l, r]))
+    time.sleep(dt) 
+    if stop:
+        t2 = time.time() - start
+        tcq.put((0.0, 0.0))
+        tmq.put(('motor', t2, [0.0, 0.0]))   
+
 ## Gets input from joystick and writes motion commands to tcQueue
 import pygame as pg
-
 def joystickWorker(tmq, tcq, running):
     # pygame setup
     os.environ["SDL_VIDEODRIVER"] = "dummy"
@@ -128,11 +138,11 @@ def joystickWorker(tmq, tcq, running):
             is_forward = 1 if fw_ax >= 0 else -1
             lax = max(-1.0, min(1.0, fw_ax + is_forward * lr_ax))
             rax = max(-1.0, min(1.0, fw_ax - is_forward * lr_ax))
-            tcq.put((lax, rax))
-            t = time.time() - start
-            tmq.put(('motor', t, [lax, rax]))
-        time.sleep(0.1)
+            motor(lax, rax, 0.1, tcq, tmq, False)
+        else:
+            time.sleep(0.1)
     print("Joystick thread terminated.")
+
 
 # Reads from tc queue and sends output to motors
 import Jetson.GPIO as GPIO
@@ -164,8 +174,8 @@ def motorWorker(q, running):
             # print("No input from joystick thread!")
             lax = 0.0
             rax = 0.0
-        print("L: %.3f, R:%.3f" % (lax, rax),
-              end="\r", flush=True)
+        #print("L: %.3f, R:%.3f" % (lax, rax),
+        #      end="\r", flush=True)
         # Set motor outputs
         GPIO.output(LP, lax > 0)
         GPIO.output(LN, lax < 0)
@@ -175,9 +185,66 @@ def motorWorker(q, running):
         #pwm_r.ChangeDutyCycle(int(100 * abs(rax)))
         GPIO.output(LE, abs(lax) > 0.1)
         GPIO.output(RE, abs(rax) > 0.1)
+    # Turn everything off
+    GPIO.output(LP, False)
+    GPIO.output(LN, False)
+    GPIO.output(RP, False)
+    GPIO.output(RN, False)
+    GPIO.output(LE, False)
+    GPIO.output(RE, False)
     print("Motor control thread terminated.")
 
 
+#
+# Core thread routines
+#
+
+# Calibration routine
+def run_calibration(tmq, tcq, outq):
+    ismanual.value = 0
+    # Clear telemetry buffer and start collection
+    tmq.put(("startcollection", None, "depth"))
+    time.sleep(1.0)
+    # Execute movement routine
+    tmpend = time.time() + 5.0 
+    while time.time() < tmpend:
+        motor(1.0, 1.0, 0.1, tcq, tmq, False)
+    # Stop collecting telemetry to buffer
+    tmq.put(("stopcollection", None, "depth"))
+    time.sleep(1.0)
+    # Perform analysis and output results
+    try:
+        outdata = outq.get()
+        velocities = []
+        for i in range(len(outdata)-1):
+            dt = outdata[i+1][0] - outdata[i][0]
+            dz = outdata[i][1] - outdata[i+1][1]
+            velocities.append(dz / dt)
+        print("Max v:", np.max(velocities))
+        print("Median v:", np.median(velocities))
+    except:
+        print("Failed to get data from queue!")
+
+# scan routine
+def run_scan(tmq, tcq, outq):
+    ismanual.value = 0
+    # Clear telemetry buffer and start collection
+    tmq.put(("startcollection", None, "depth"))
+    time.sleep(1.0)
+    # Execute movement routine 
+    for i in range(10):
+        motor(1.0, -1.0, 0.4, tcq, tmq, True)
+        time.sleep(1.5)
+    # Stop collecting telemetry to buffer
+    tmq.put(("stopcollection", None, "depth"))
+    time.sleep(1.0)
+    # Perform analysis and output results
+    try:
+        outdata = outq.get()
+        print("Scan output:")
+        print(outdata)
+    except:
+        print("Failed to get data from queue!")
 #
 # Main Loop
 #
@@ -210,33 +277,11 @@ if __name__ == "__main__":
             if kbinput  == 'q' or kbinput =='quit':
                 running.value = 0
             elif kbinput == 'calibrate':
-                print('Begin calibration...')
-                ismanual.value = 0
-                time.sleep(1.0)
-                # Clear telemetry buffer and start collection
-                tmQueue.put(("startcollection", None, "depth"))
-                # Execute movement routine
-                tmpend = time.time() + 5.0 
-                while time.time() < tmpend:
-                    t = time.time() - start
-                    tcQueue.put((1.0, 1.0))
-                    tmQueue.put(('motor', t, [1.0, 1.0]))
-                    time.sleep(0.1) 
-                # Stop collecting telemetry to buffer
-                tmQueue.put(("stopcollection", None, "depth"))
-                time.sleep(1.0)
-                # Perform analysis and output results
-                try:
-                    outdata = livetmQueue.get()
-                    velocities = []
-                    for i in range(len(outdata)-1):
-                        dt = outdata[i+1][0] - outdata[i][0]
-                        dz = outdata[i][1] - outdata[i+1][1]
-                        velocities.append(dz / dt)
-                    print("Max v:", np.max(velocities))
-                    print("Median v:", np.median(velocities))
-                except:
-                    print("Failed to get data from queue!")
+                print('Begin calibration routine...')
+                run_calibration(tmQueue, tcQueue, livetmQueue)
+            elif kbinput == 'scan':
+                print('Begin scan routine...')
+                run_scan(tmQueue, tcQueue, livetmQueue)
             elif kbinput == 'manual start':
                 print('Enabling manual joystick control...')
                 ismanual.value = 1
