@@ -8,6 +8,7 @@ import sys
 import os
 import tables
 import cv2
+import pickle
 
 # For camera
 from jetson_camera import gstreamer_pipeline
@@ -17,11 +18,13 @@ import VL53L1X
 from collections import deque
 
 
-IM_W = 320
-IM_H = 240
+IM_W = 1280
+IM_H = 720
 
 # Writes camera data to tmqueue
 def camWorker(q, running):
+    with open("cameramtx.dat", "rb") as f:
+        cam_dict = pickle.load(f)
     stream = gstreamer_pipeline(flip_method=2, 
                                 capture_width=IM_W, 
                                 capture_height=IM_H,
@@ -34,8 +37,12 @@ def camWorker(q, running):
         while bool(running.value):
             ret_val, output = cap.read()
             t = time.time() - start
-            outdata = np.moveaxis(output, 2, 0)
-            q.put(('cam', t, outdata))
+            output = cv2.undistort(output, cam_dict["mtx"], cam_dict["dist"], 
+                                   None, cam_dict["newcameramtx"])
+            #print(output.shape)
+            q.put(('cam', t, output))
+            outdata = cv2.resize(output, (320, 180))
+            outdata = np.moveaxis(outdata, 2, 0)
             vis.image(np.flip(outdata, axis=0), win=0)
         cap.release()
         print("Camera thread terminated.")
@@ -69,8 +76,11 @@ def fileWorker(q, outq, running):
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     if not os.path.isdir('data'):
         os.mkdir('data')
-    f = tables.open_file('data/' + timestamp + '.h5', mode='w')    
-    array_camdata = f.create_earray(f.root, 'camdata', tables.Float32Atom(), (0, 3, IM_H, IM_W))
+    datadir = os.path.join('data', timestamp)
+    if not os.path.isdir(datadir):
+        os.mkdir(datadir)
+    f = tables.open_file(os.path.join(datadir, "data.h5"), mode='w')    
+    #array_camdata = f.create_earray(f.root, 'camdata', tables.Float32Atom(), (0, 3, IM_H, IM_W))
     array_camtime = f.create_earray(f.root, 'camtime', tables.Float32Atom(), (0, 1))
     array_depthdata = f.create_earray(f.root, 'depthdata', tables.Float32Atom(), (0, 1))
     array_depthtime = f.create_earray(f.root, 'depthtime', tables.Float32Atom(), (0, 1))
@@ -78,13 +88,16 @@ def fileWorker(q, outq, running):
     array_motortime = f.create_earray(f.root, 'motortime', tables.Float32Atom(), (0, 1))
     livetms = {}
     print("File thread online!")
+    camidx = 0
     while bool(running.value):
         try:
             (key, t, value) = q.get(timeout=1)
             t_arr = np.array([[t]])
             if (key == 'cam'):
                 array_camtime.append(t_arr)
-                array_camdata.append(np.expand_dims(value, 0))
+                #array_camdata.append(np.expand_dims(value, 0))
+                cv2.imwrite(os.path.join(datadir, str(camidx) + ".jpg"), value)
+                camidx += 1
             elif (key == 'depth'):
                 array_depthtime.append(t_arr)
                 array_depthdata.append([[value]])
@@ -100,7 +113,8 @@ def fileWorker(q, outq, running):
                 livetms.pop(value, None) 
             if key in livetms.keys():
                 livetms[key].append((t, value))
-        except:
+        except Exception as e:
+            print(e)
             pass
     print("Closing file...")
     f.close()
